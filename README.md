@@ -2,6 +2,10 @@
 
 This repository provides the ESPHome YAML configuration for controlling a Venta LW25 humidifier. It enables easy integration with Home Assistant to control the fan speed of the humidifier.
 
+## Screenshots from HA
+![Screenshot 1](https://github.com/feldsam/Venta-LW-ESPHome/blob/main/images/screenshot-1.png?raw=true)
+![Screenshot 2](https://github.com/feldsam/Venta-LW-ESPHome/blob/main/images/screenshot-2.png?raw=true)
+
 ## License
 
 This project is licensed under the MIT License. See the `LICENSE` file for more information.
