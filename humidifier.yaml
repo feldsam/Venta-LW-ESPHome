@@ -1,0 +1,291 @@
+esphome:
+  name: humidifier
+  friendly_name: Humidifier
+  comment: "Control for Venta LW25 Humidifier/Air Purifier (2-speed model)"
+
+esp8266:
+  #board: esp01_1m
+  board: esp12e  # ESP-12S uses the same settings as ESP-12E/F
+  restore_from_flash: true
+
+# Enable logging
+logger:
+  level: DEBUG
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "***********************="
+
+ota:
+  - platform: esphome
+    password: "**************************"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Humidifier Fallback Hotspot"
+    password: "**************"
+
+captive_portal:
+
+# Pin mapping as provided in documentation:
+# GPIO-2 (D4): Power LED (digital) INPUT
+# GPIO-0 (D3): LED level 1 (digital) INPUT
+# GPIO-4 (D2): LED level 2 (digital) INPUT - Not used for 2-speed model
+# GPIO-5 (D1): LED level 3 (digital) INPUT - Level 2 on 2-speed model
+# GPIO-13 (D7): Error LED (digital) INPUT
+# GPIO-15 (D8): Power button press Switch OUTPUT, default LOW
+# GPIO-14 (D5): Up button press Switch OUTPUT, default LOW
+# GPIO-12 (D6): Case open detection (digital) INPUT
+# GPIO-16 (D0): Error LED control (digital) OUTPUT, default LOW
+
+globals:
+  - id: tracked_speed
+    type: int
+    restore_value: true
+    initial_value: '0'
+
+# GPIO Configuration
+binary_sensor:
+  # LEDs as inputs
+  - platform: gpio
+    pin:
+      number: GPIO2  # Power LED (D4)
+      inverted: true
+      mode: INPUT_PULLUP
+    name: "Power LED"
+    id: power_led
+    filters:
+      - delayed_on: 100ms
+      - delayed_off: 100ms
+    on_state:
+      then:
+        - binary_sensor.template.publish:
+            id: power_state
+            state: !lambda "return id(power_led).state;"
+        - if:
+            condition:
+              binary_sensor.is_on: power_led
+            then:
+              - fan.turn_on: venta_fan
+            else:
+              - fan.turn_off: venta_fan
+
+  - platform: gpio
+    pin:
+      number: GPIO0  # LED level 1 (D3)
+      inverted: true
+      mode: INPUT_PULLUP
+    name: "Level 1 LED"
+    id: level1_led
+    filters:
+      - delayed_on_off: 1s
+    on_state:
+      then:
+        - if:
+            condition:
+              - binary_sensor.is_on: level1_led
+            then:
+              - lambda: 'id(tracked_speed) = 1;'
+              - fan.turn_on:
+                  id: venta_fan
+                  speed: 1  # Low speed
+
+  - platform: gpio
+    pin:
+      number: GPIO5  # LED level 3/Speed 2 (D1)
+      inverted: true
+      mode: INPUT_PULLUP
+    name: "Level 2 LED"
+    id: level2_led
+    filters:
+      - delayed_on_off: 1s
+    on_state:
+      then:
+        - if:
+            condition:
+              - binary_sensor.is_on: level2_led
+            then:
+              - lambda: 'id(tracked_speed) = 2;'
+              - fan.turn_on:
+                  id: venta_fan
+                  speed: 2  # High speed
+
+  - platform: gpio
+    pin:
+      number: GPIO13  # Error LED (D7)
+      inverted: true
+      mode: INPUT_PULLUP
+    name: "Error LED"
+    id: error_led
+    filters:
+      - delayed_on: 100ms
+      - delayed_off: 100ms
+    on_state:
+      then:
+        - binary_sensor.template.publish:
+            id: error_state
+            state: !lambda "return id(error_led).state;"
+
+  - platform: gpio
+    pin:
+      number: GPIO12  # Case open detection (D6)
+      inverted: true
+      mode: INPUT_PULLUP
+    name: "Case Open Sensor"
+    id: case_open
+    device_class: "problem"
+    filters:
+      - delayed_on: 100ms
+      - delayed_off: 100ms
+
+  # Virtual sensors for exposing to Home Assistant
+  - platform: template
+    name: "Venta Power State"
+    id: power_state
+    device_class: "power"
+    lambda: |-
+      return id(power_led).state;
+    
+  - platform: template
+    name: "Venta Error State"
+    id: error_state
+    device_class: "problem"
+    lambda: |-
+      return id(error_led).state;
+
+# Output GPIOs for controlling buttons
+output:
+  - platform: gpio
+    pin: 
+      number: GPIO15  # Power button press (D8)
+      inverted: false
+      mode: OUTPUT
+    id: pwr_button
+  
+  - platform: gpio
+    pin: 
+      number: GPIO14  # Up button press (D5)
+      inverted: false
+      mode: OUTPUT
+    id: updown_button
+    
+  - platform: gpio
+    pin: 
+      number: GPIO16  # Error LED control (D0)
+      inverted: false
+      mode: OUTPUT
+    id: error_led_override
+
+# Button Press Helpers
+script:
+  - id: press_power_button
+    then:
+      - output.turn_on: pwr_button
+      - delay: 100ms
+      - output.turn_off: pwr_button
+      
+  - id: press_speed_button
+    then:
+      - output.turn_on: updown_button
+      - delay: 100ms
+      - output.turn_off: updown_button
+
+# Button Services for direct control
+button:
+  - platform: template
+    name: "Power Toggle"
+    on_press:
+      then:
+        - script.execute: press_power_button
+            
+  - platform: template
+    name: "Speed Toggle"
+    on_press:
+      then:
+        - script.execute: press_speed_button
+        
+  - platform: restart
+    name: "Restart ESP"
+    entity_category: "diagnostic"
+
+# Fan implementation for better UI in Home Assistant
+fan:
+  - platform: template
+    name: "Venta Fan"
+    id: venta_fan
+    speed_count: 2
+    
+    # Handle turn on requests
+    on_turn_on:
+      then:
+        - lambda: |-
+            if (!id(power_state).state) {
+              // Only press button if device is currently off
+              id(press_power_button).execute();
+              delay(1000);
+            }
+    
+    # Handle turn off requests
+    on_turn_off:
+      then:
+        - lambda: |-
+            if (id(power_state).state) {
+              // Only press button if device is currently on
+              id(press_power_button).execute();
+            }
+
+    on_speed_set:
+      then:
+        - lambda: |-
+            int target_speed = x;
+
+            // Get current speed
+            int current_speed = id(tracked_speed);
+            
+            ESP_LOGD("venta_fan", "Current speed: %d, Target speed: %d", current_speed, target_speed);
+
+            // Now set to requested speed if different
+            if (current_speed != target_speed) {
+              id(press_speed_button).execute();
+            }
+
+
+          
+         
+
+# Switch for error LED override
+switch:
+  - platform: output
+    name: "Error LED Override"
+    output: error_led_override
+    restore_mode: RESTORE_DEFAULT_OFF
+
+# Status text sensor for more information
+text_sensor:
+  - platform: template
+    name: "Venta Status"
+    id: venta_status
+    icon: "mdi:air-humidifier"
+    update_interval: 5s
+    lambda: |-
+      if (!id(power_state).state) {
+        return {"Off"};
+      } else if (id(error_state).state) {
+        return {"Error"};
+      } else if (id(case_open).state) {
+        return {"Case Open"};
+      } else {
+        int level = id(venta_fan).speed;
+        if (level == 1) {
+          return {"Running - Low Speed"};
+        } else if (level == 2) {
+          return {"Running - High Speed"};
+        } else {
+          return {"Running - Unknown Speed"};
+        }
+      }
